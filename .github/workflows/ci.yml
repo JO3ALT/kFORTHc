@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install LLVM/Clang
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y llvm clang
+
+      - name: Build kpascal (sibling repo)
+        run: |
+          if [ ! -d ../kpascal ]; then
+            echo "Missing ../kpascal in CI workspace" >&2
+            exit 1
+          fi
+          cargo build --release -q --manifest-path ../kpascal/Cargo.toml
+
+      - name: Build kforthc
+        run: cargo build
+
+      - name: Run sample tests
+        run: ./scripts/test_samples.sh
+
+      - name: Run negative tests
+        run: ./scripts/test_negative_pascal.sh
+
+      - name: Run runtime failure tests
+        run: ./scripts/test_runtime_failures.sh
+
+      - name: Run known limitation tests
+        run: ./scripts/test_known_limitations.sh
+
+      - name: Run error snapshot tests
+        run: ./scripts/test_error_messages_snapshot.sh

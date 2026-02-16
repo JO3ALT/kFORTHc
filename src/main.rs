@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs;
 
@@ -146,8 +146,14 @@ struct Codegen<'a> {
     // ABI: stack_base: i32*, sp_ptr: i32*
     stack_base: &'a str,
     sp_ptr: &'a str,
+    rstack_base: &'a str,
+    rsp_ptr: &'a str,
     ctrl: Vec<Control>,
     externs: HashMap<String, String>, // word -> llvm callee
+    created_words: HashMap<String, i32>,
+    constant_words: HashMap<String, i32>,
+    known_defs: HashSet<String>,
+    here: i32,
 }
 
 impl<'a> Codegen<'a> {
@@ -178,9 +184,28 @@ impl<'a> Codegen<'a> {
             b: LlvmBuilder::new(),
             stack_base: "%stack_base",
             sp_ptr: "%sp_ptr",
+            rstack_base: "%rstack_base",
+            rsp_ptr: "%rsp_ptr",
             ctrl: Vec::new(),
             externs,
+            created_words: HashMap::new(),
+            constant_words: HashMap::new(),
+            known_defs: HashSet::new(),
+            here: 0,
         }
+    }
+
+    fn set_program_symbols(
+        &mut self,
+        created_words: HashMap<String, i32>,
+        constant_words: HashMap<String, i32>,
+        known_defs: HashSet<String>,
+        here: i32,
+    ) {
+        self.created_words = created_words;
+        self.constant_words = constant_words;
+        self.known_defs = known_defs;
+        self.here = here;
     }
 
     fn emit_prelude(&mut self) {
@@ -229,6 +254,15 @@ impl<'a> Codegen<'a> {
             name
         ));
         self.b.emit_line("entry:");
+        self.b
+            .emit_line("  %rstack = alloca [1024 x i32], align 16");
+        self.b
+            .emit_line("  %rsp_ptr = alloca i32, align 4");
+        self.b
+            .emit_line("  store i32 0, i32* %rsp_ptr, align 4");
+        self.b.emit_line(
+            "  %rstack_base = getelementptr inbounds [1024 x i32], [1024 x i32]* %rstack, i32 0, i32 0",
+        );
     }
 
     fn end_func(&mut self) {
@@ -271,6 +305,60 @@ impl<'a> Codegen<'a> {
         self.b.emit_line(&format!(
             "  {} = getelementptr inbounds i32, i32* {}, i32 {}",
             ptr, self.stack_base, sp2
+        ));
+        let v = self.b.fresh_tmp();
+        self.b.emit_line(&format!("  {} = load i32, i32* {}, align 4", v, ptr));
+        v
+    }
+
+    fn load_rsp(&mut self) -> String {
+        let t = self.b.fresh_tmp();
+        self.b
+            .emit_line(&format!("  {} = load i32, i32* {}, align 4", t, self.rsp_ptr));
+        t
+    }
+
+    fn store_rsp(&mut self, rsp: &str) {
+        self.b
+            .emit_line(&format!("  store i32 {}, i32* {}, align 4", rsp, self.rsp_ptr));
+    }
+
+    fn rpush_i32(&mut self, v: &str) {
+        let rsp = self.load_rsp();
+        let ptr = self.b.fresh_tmp();
+        self.b.emit_line(&format!(
+            "  {} = getelementptr inbounds i32, i32* {}, i32 {}",
+            ptr, self.rstack_base, rsp
+        ));
+        self.b.emit_line(&format!("  store i32 {}, i32* {}, align 4", v, ptr));
+        let rsp2 = self.b.fresh_tmp();
+        self.b.emit_line(&format!("  {} = add i32 {}, 1", rsp2, rsp));
+        self.store_rsp(&rsp2);
+    }
+
+    fn rpop_i32(&mut self) -> String {
+        let rsp = self.load_rsp();
+        let rsp2 = self.b.fresh_tmp();
+        self.b.emit_line(&format!("  {} = sub i32 {}, 1", rsp2, rsp));
+        self.store_rsp(&rsp2);
+        let ptr = self.b.fresh_tmp();
+        self.b.emit_line(&format!(
+            "  {} = getelementptr inbounds i32, i32* {}, i32 {}",
+            ptr, self.rstack_base, rsp2
+        ));
+        let v = self.b.fresh_tmp();
+        self.b.emit_line(&format!("  {} = load i32, i32* {}, align 4", v, ptr));
+        v
+    }
+
+    fn rpeek_i32(&mut self) -> String {
+        let rsp = self.load_rsp();
+        let rsp2 = self.b.fresh_tmp();
+        self.b.emit_line(&format!("  {} = sub i32 {}, 1", rsp2, rsp));
+        let ptr = self.b.fresh_tmp();
+        self.b.emit_line(&format!(
+            "  {} = getelementptr inbounds i32, i32* {}, i32 {}",
+            ptr, self.rstack_base, rsp2
         ));
         let v = self.b.fresh_tmp();
         self.b.emit_line(&format!("  {} = load i32, i32* {}, align 4", v, ptr));
@@ -565,12 +653,43 @@ impl<'a> Codegen<'a> {
                 let p = self.emit_string_global(&s);
                 self.b.emit_line(&format!("  call void @{}(i8* {})", callee, p));
             }
+            ExternArgMode::Pop2I32Void => {
+                let b = self.pop_i32();
+                let a = self.pop_i32();
+                self.b
+                    .emit_line(&format!("  call void @{}(i32 {}, i32 {})", callee, a, b));
+            }
+            ExternArgMode::Pop2I32RetI32Push => {
+                let b = self.pop_i32();
+                let a = self.pop_i32();
+                let r = self.b.fresh_tmp();
+                self.b.emit_line(&format!(
+                    "  {} = call i32 @{}(i32 {}, i32 {})",
+                    r, callee, a, b
+                ));
+                self.push_i32(&r);
+            }
+            ExternArgMode::Pop3I32Void => {
+                let c = self.pop_i32();
+                let b = self.pop_i32();
+                let a = self.pop_i32();
+                self.b.emit_line(&format!(
+                    "  call void @{}(i32 {}, i32 {}, i32 {})",
+                    callee, a, b, c
+                ));
+            }
         }
         Ok(())
     }
 
+    fn call_word(&mut self, word: &str) {
+        self.b.emit_line(&format!(
+            "  call void @{}(i32* {}, i32* {})",
+            word, self.stack_base, self.sp_ptr
+        ));
+    }
+
     fn compile_body(&mut self, toks: &[Tok]) -> Result<(), String> {
-        // Minimal: supports numbers, words, S" + PWRITE-STR, and a set of core words.
         let mut i = 0usize;
         while i < toks.len() {
             match &toks[i] {
@@ -592,10 +711,32 @@ impl<'a> Codegen<'a> {
                     }
                 }
                 Tok::Word(w) => {
+                    if let Some(v) = self.constant_words.get(w) {
+                        self.push_i32(&v.to_string());
+                        i += 1;
+                        continue;
+                    }
+                    if let Some(addr) = self.created_words.get(w) {
+                        self.push_i32(&addr.to_string());
+                        i += 1;
+                        continue;
+                    }
                     match w.as_str() {
                         // stack ops
                         "DUP" => self.dup(),
                         "DROP" => self.drop(),
+                        ">R" => {
+                            let v = self.pop_i32();
+                            self.rpush_i32(&v);
+                        }
+                        "R>" => {
+                            let v = self.rpop_i32();
+                            self.push_i32(&v);
+                        }
+                        "R@" => {
+                            let v = self.rpeek_i32();
+                            self.push_i32(&v);
+                        }
 
                         // arithmetic / logic (wrap semantics by default)
                         "+" => self.binop("add"),
@@ -639,8 +780,50 @@ impl<'a> Codegen<'a> {
                         "PREADLN" => self.call_extern("PREADLN", ExternArgMode::Void, None)?,
 
                         "PBOOL" => self.call_extern("PBOOL", ExternArgMode::PopI32RetI32Push, None)?,
+                        "PVAR!" => self.call_extern("PVAR!", ExternArgMode::Pop2I32Void, None)?,
+                        "PVAR@" => self.call_extern("PVAR@", ExternArgMode::PopI32RetI32Push, None)?,
+                        "PFIELD!" => self.call_extern("PFIELD!", ExternArgMode::Pop3I32Void, None)?,
+                        "PFIELD@" => {
+                            self.call_extern("PFIELD@", ExternArgMode::Pop2I32RetI32Push, None)?
+                        }
 
-                        // You can add PVAR!/PVAR@ etc here later (needs calling convention design)
+                        // Minimal compile-time dictionary words used by generated IL.
+                        "CONSTANT" => {
+                            let val = match toks.get(i.wrapping_sub(1)) {
+                                Some(Tok::Num(v)) => *v,
+                                _ => return Err("CONSTANT currently requires a literal number before it".into()),
+                            };
+                            let _ = self.pop_i32();
+                            let name = match toks.get(i + 1) {
+                                Some(Tok::Word(name)) => name.clone(),
+                                _ => return Err("CONSTANT requires a following name".into()),
+                            };
+                            self.constant_words.insert(name, val);
+                            i += 1; // consume name
+                        }
+                        "CREATE" => {
+                            let name = match toks.get(i + 1) {
+                                Some(Tok::Word(name)) => name.clone(),
+                                _ => return Err("CREATE requires a following name".into()),
+                            };
+                            self.created_words.insert(name, self.here);
+                            i += 1; // consume name
+                        }
+                        "," => {
+                            // Forth comma allocates one 32-bit cell (4 bytes).
+                            let _ = self.pop_i32();
+                            self.here = self.here.wrapping_add(4);
+                        }
+                        "ALLOT" => {
+                            let _ = self.pop_i32();
+                            if let Some(Tok::Num(lit)) = toks.get(i.wrapping_sub(1)) {
+                                self.here = self.here.wrapping_add(*lit);
+                            } else {
+                                return Err("ALLOT currently requires a literal number before it".into());
+                            }
+                        }
+
+                        _ if self.known_defs.contains(w) => self.call_word(w),
                         _ => return Err(format!("Unknown word: {}", w)),
                     }
                 }
@@ -665,13 +848,25 @@ enum ExternArgMode {
     RetI32Push,
     PopI32RetI32Push,
     StrVoid,
+    Pop2I32Void,
+    Pop2I32RetI32Push,
+    Pop3I32Void,
 }
 
-fn parse_defs(toks: &[Tok]) -> Result<Vec<(String, Vec<Tok>)>, String> {
-    // Parses:
-    // : name ... ;
-    // Returns list of (name, body_tokens)
+struct ParsedProgram {
+    defs: Vec<(String, Vec<Tok>)>,
+    created_words: HashMap<String, i32>,
+    constant_words: HashMap<String, i32>,
+    here: i32,
+    entry_call: Option<String>,
+}
+
+fn parse_program(toks: &[Tok]) -> Result<ParsedProgram, String> {
     let mut defs = Vec::new();
+    let mut created_words = HashMap::new();
+    let mut constant_words = HashMap::new();
+    let mut here: i32 = 0;
+    let mut entry_call: Option<String> = None;
     let mut i = 0usize;
 
     while i < toks.len() {
@@ -698,14 +893,56 @@ fn parse_defs(toks: &[Tok]) -> Result<Vec<(String, Vec<Tok>)>, String> {
                 i += 1; // consume ';'
                 defs.push((name, body));
             }
-            _ => {
-                // Allow top-level tokens to be ignored (or error). Here: error to keep strict.
-                return Err("Only ': name ... ;' definitions are allowed at top-level in this prototype.".into());
+            Tok::Word(w) if w == "CREATE" => {
+                let name = match toks.get(i + 1) {
+                    Some(Tok::Word(name)) => name.clone(),
+                    _ => return Err("CREATE requires a following name at top-level".into()),
+                };
+                created_words.insert(name, here);
+                i += 2;
+            }
+            Tok::Word(w) if w == "," => {
+                here = here.wrapping_add(4);
+                i += 1;
+            }
+            Tok::Word(w) if w == "ALLOT" => {
+                let n = match toks.get(i.wrapping_sub(1)) {
+                    Some(Tok::Num(v)) => *v,
+                    _ => return Err("Top-level ALLOT requires a literal number before it".into()),
+                };
+                here = here.wrapping_add(n);
+                i += 1;
+            }
+            Tok::Word(w) if w == "CONSTANT" => {
+                let val = match toks.get(i.wrapping_sub(1)) {
+                    Some(Tok::Num(v)) => *v,
+                    _ => return Err("Top-level CONSTANT requires a literal number before it".into()),
+                };
+                let name = match toks.get(i + 1) {
+                    Some(Tok::Word(name)) => name.clone(),
+                    _ => return Err("CONSTANT requires a following name at top-level".into()),
+                };
+                constant_words.insert(name, val);
+                i += 2;
+            }
+            Tok::Word(w) => {
+                // kpascal output usually ends with `MAIN` invocation.
+                entry_call = Some(w.clone());
+                i += 1;
+            }
+            Tok::Num(_) | Tok::Str(_) | Tok::Semi => {
+                i += 1;
             }
         }
     }
 
-    Ok(defs)
+    Ok(ParsedProgram {
+        defs,
+        created_words,
+        constant_words,
+        here,
+        entry_call,
+    })
 }
 
 fn main() -> Result<(), String> {
@@ -715,10 +952,21 @@ fn main() -> Result<(), String> {
     }
     let input = fs::read_to_string(&args[1]).map_err(|e| format!("Read error: {}", e))?;
     let toks = tokenize(&input)?;
-    let defs = parse_defs(&toks)?;
+    let parsed = parse_program(&toks)?;
+    let defs = parsed.defs;
+    let mut known_defs = HashSet::new();
+    for (name, _) in &defs {
+        known_defs.insert(name.clone());
+    }
 
     let mut cg = Codegen::new();
     cg.emit_prelude();
+    cg.set_program_symbols(
+        parsed.created_words,
+        parsed.constant_words,
+        known_defs,
+        parsed.here,
+    );
 
     // Compile all defs
     for (name, body) in &defs {
@@ -729,7 +977,9 @@ fn main() -> Result<(), String> {
 
     // If there is a word named MAIN, create @main wrapper calling it.
     // Otherwise, if exactly one def exists, call it.
-    let entry = if defs.iter().any(|(n, _)| n == "MAIN") {
+    let entry = if let Some(entry) = parsed.entry_call {
+        entry
+    } else if defs.iter().any(|(n, _)| n == "MAIN") {
         "MAIN".to_string()
     } else if defs.len() == 1 {
         defs[0].0.clone()

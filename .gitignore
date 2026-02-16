@@ -3,3 +3,13 @@
 out.ll
 out.o
 a.out
+required_words.ll
+required_words.o
+required_words.out
+required_words_actual.txt
+pascal_tests/full_coverage.fth
+pascal_tests/full_coverage.ll
+pascal_tests/full_coverage.o
+pascal_tests/full_coverage.out
+pascal_tests/full_coverage.actual
+samples/build/
