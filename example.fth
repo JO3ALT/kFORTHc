@@ -1,0 +1,12 @@
+: MAIN
+  S" sum: " PWRITE-STR
+  3 4 + DUP PWRITE-I32 PWRITELN
+
+  S" if: " PWRITE-STR
+  1 IF
+    S" true" PWRITE-STR
+  ELSE
+    S" false" PWRITE-STR
+  THEN
+  PWRITELN
+;
