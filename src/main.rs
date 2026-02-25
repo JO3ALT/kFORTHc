@@ -56,6 +56,9 @@ fn tokenize(src: &str) -> Result<Vec<Tok>, String> {
         // S" ... "
         if c == 'S' && i + 1 < chars.len() && chars[i + 1] == '"' {
             i += 2; // skip S"
+            if i < chars.len() && is_space(chars[i]) {
+                i += 1; // Forth-style parsed-string delimiter
+            }
             let mut s = String::new();
             while i < chars.len() && chars[i] != '"' {
                 s.push(chars[i]);
@@ -89,6 +92,70 @@ fn tokenize(src: &str) -> Result<Vec<Tok>, String> {
     }
 
     Ok(t)
+}
+
+fn parse_f32_token_bits(s: &str) -> Option<i32> {
+    let lower = s.to_ascii_lowercase();
+    let bits = match lower.as_str() {
+        "inf" | "+inf" => f32::INFINITY.to_bits(),
+        "-inf" => f32::NEG_INFINITY.to_bits(),
+        "nan" | "+nan" | "-nan" => f32::NAN.to_bits(),
+        _ => s.parse::<f32>().ok()?.to_bits(),
+    };
+    Some(bits as i32)
+}
+
+fn llvm_word_sym(word: &str) -> String {
+    let mut out = String::from("w");
+    for b in word.as_bytes() {
+        let ch = *b as char;
+        if ch.is_ascii_alphanumeric() || ch == '_' {
+            out.push(ch);
+        } else {
+            out.push_str(&format!("_x{:02X}", b));
+        }
+    }
+    out
+}
+
+fn extract_routine_aliases(src: &str) -> HashMap<String, String> {
+    let mut m = HashMap::new();
+    for line in src.lines() {
+        let line = line.trim();
+        if !line.starts_with("( ROUTINE ") || !line.ends_with(')') {
+            continue;
+        }
+        let body = &line[2..line.len() - 1].trim(); // drop parens
+        if let Some((lhs, rhs)) = body
+            .strip_prefix("ROUTINE ")
+            .and_then(|x| x.split_once(" => "))
+        {
+            let alias = lhs.trim().to_string();
+            let word = rhs.trim().to_string();
+            if !alias.is_empty() && !word.is_empty() {
+                m.insert(word, alias);
+            }
+        }
+    }
+    m
+}
+
+fn resolve_prev_compile_time_value(
+    toks: &[Tok],
+    i: usize,
+    here: i32,
+    constant_words: &HashMap<String, i32>,
+    created_words: &HashMap<String, i32>,
+) -> Option<i32> {
+    match toks.get(i.wrapping_sub(1))? {
+        Tok::Num(v) => Some(*v),
+        Tok::Word(w) if w == "HERE" => Some(here),
+        Tok::Word(w) => constant_words
+            .get(w)
+            .copied()
+            .or_else(|| created_words.get(w).copied()),
+        _ => None,
+    }
 }
 
 struct LlvmBuilder {
@@ -170,7 +237,11 @@ impl<'a> Codegen<'a> {
         externs.insert("PREAD-I32".into(), "pread_i32".into());
         externs.insert("PREAD-BOOL".into(), "pread_bool".into());
         externs.insert("PREAD-CHAR".into(), "pread_char".into());
+        externs.insert("PREAD-F32".into(), "pread_f32_bits".into());
         externs.insert("PREADLN".into(), "preadln".into());
+        externs.insert("HERE".into(), "rt_here".into());
+        externs.insert("ALLOT".into(), "rt_allot".into());
+        externs.insert("__RT_HEAP_RESET".into(), "rt_heap_reset".into());
 
         // Variable/field accessors as services (you can later lower them)
         externs.insert("PVAR@".into(), "pvar_get".into());
@@ -179,6 +250,43 @@ impl<'a> Codegen<'a> {
         externs.insert("PFIELD!".into(), "pfield_set".into());
 
         externs.insert("PBOOL".into(), "pbool".into());
+        externs.insert("PWRITE-F32".into(), "pwrite_f32_bits".into());
+        externs.insert("FADD".into(), "fadd_bits".into());
+        externs.insert("FSUB".into(), "fsub_bits".into());
+        externs.insert("FMUL".into(), "fmul_bits".into());
+        externs.insert("FDIV".into(), "fdiv_bits".into());
+        externs.insert("FNEGATE".into(), "fnegate_bits".into());
+        externs.insert("FABS".into(), "fabs_bits".into());
+        externs.insert("F=".into(), "feq_bits".into());
+        externs.insert("F<".into(), "flt_bits".into());
+        externs.insert("F<=".into(), "fle_bits".into());
+        externs.insert("FZERO?".into(), "fzero_bits".into());
+        externs.insert("FINF?".into(), "finf_bits".into());
+        externs.insert("FNAN?".into(), "fnan_bits".into());
+        externs.insert("FFINITE?".into(), "ffinite_bits".into());
+        externs.insert("S>F".into(), "s_to_f_bits".into());
+        externs.insert("F>S".into(), "f_bits_to_s".into());
+        externs.insert("Q16.16>F".into(), "q16_16_to_f_bits".into());
+        externs.insert("F>Q16.16".into(), "f_bits_to_q16_16".into());
+        externs.insert("FROUND-I32".into(), "fround_i32_bits".into());
+
+        externs.insert("__KP_FABS_F32".into(), "kp_fabs_f32_bits".into());
+        externs.insert("__KP_FSQRT_F32".into(), "kp_fsqrt_f32_bits".into());
+        externs.insert("__KP_FSIN_F32".into(), "kp_fsin_f32_bits".into());
+        externs.insert("__KP_FCOS_F32".into(), "kp_fcos_f32_bits".into());
+        externs.insert("__KP_FPOW_F32_I32".into(), "kp_fpow_f32_i32_bits".into());
+        externs.insert("__KP_FFLOOR_F32".into(), "kp_ffloor_f32_bits".into());
+        externs.insert("__KP_FCEIL_F32".into(), "kp_fceil_f32_bits".into());
+
+        externs.insert("__KP_FX_SQRT".into(), "kp_fx_sqrt_i32".into());
+        externs.insert("__KP_FX_SIN".into(), "kp_fx_sin_deg_i32".into());
+        externs.insert("__KP_FX_COS".into(), "kp_fx_cos_deg_i32".into());
+        externs.insert("__KP_FX_TAN".into(), "kp_fx_tan_deg_i32".into());
+        externs.insert("__KP_FX_ASIN".into(), "kp_fx_asin_fixed_i32".into());
+        externs.insert("__KP_FX_ACOS".into(), "kp_fx_acos_fixed_i32".into());
+        externs.insert("__KP_FX_ATAN".into(), "kp_fx_atan_fixed_i32".into());
+        externs.insert("__KP_FX_LN".into(), "kp_fx_ln_i32".into());
+        externs.insert("__KP_FX_LOG".into(), "kp_fx_log_i32".into());
 
         Self {
             b: LlvmBuilder::new(),
@@ -223,17 +331,58 @@ impl<'a> Codegen<'a> {
         self.b.emit_line("declare i32 @pread_i32()");
         self.b.emit_line("declare i32 @pread_bool()");
         self.b.emit_line("declare i32 @pread_char()");
+        self.b.emit_line("declare i32 @pread_f32_bits()");
         self.b.emit_line("declare void @preadln()");
+        self.b.emit_line("declare i32 @rt_here()");
+        self.b.emit_line("declare void @rt_allot(i32)");
+        self.b.emit_line("declare void @rt_heap_reset(i32)");
 
         self.b.emit_line("declare i32 @pvar_get(i32)");
         self.b.emit_line("declare void @pvar_set(i32, i32)");
         self.b.emit_line("declare i32 @pfield_get(i32, i32)");
         self.b.emit_line("declare void @pfield_set(i32, i32, i32)");
         self.b.emit_line("declare i32 @pbool(i32)");
+        self.b.emit_line("declare void @pwrite_f32_bits(i32)");
+        self.b.emit_line("declare i32 @fadd_bits(i32, i32)");
+        self.b.emit_line("declare i32 @fsub_bits(i32, i32)");
+        self.b.emit_line("declare i32 @fmul_bits(i32, i32)");
+        self.b.emit_line("declare i32 @fdiv_bits(i32, i32)");
+        self.b.emit_line("declare i32 @fnegate_bits(i32)");
+        self.b.emit_line("declare i32 @fabs_bits(i32)");
+        self.b.emit_line("declare i32 @feq_bits(i32, i32)");
+        self.b.emit_line("declare i32 @flt_bits(i32, i32)");
+        self.b.emit_line("declare i32 @fle_bits(i32, i32)");
+        self.b.emit_line("declare i32 @fzero_bits(i32)");
+        self.b.emit_line("declare i32 @finf_bits(i32)");
+        self.b.emit_line("declare i32 @fnan_bits(i32)");
+        self.b.emit_line("declare i32 @ffinite_bits(i32)");
+        self.b.emit_line("declare i32 @s_to_f_bits(i32)");
+        self.b.emit_line("declare i32 @f_bits_to_s(i32)");
+        self.b.emit_line("declare i32 @q16_16_to_f_bits(i32)");
+        self.b.emit_line("declare i32 @f_bits_to_q16_16(i32)");
+        self.b.emit_line("declare i32 @fround_i32_bits(i32)");
+        self.b.emit_line("declare i32 @kp_fabs_f32_bits(i32)");
+        self.b.emit_line("declare i32 @kp_fsqrt_f32_bits(i32)");
+        self.b.emit_line("declare i32 @kp_fsin_f32_bits(i32)");
+        self.b.emit_line("declare i32 @kp_fcos_f32_bits(i32)");
+        self.b
+            .emit_line("declare i32 @kp_fpow_f32_i32_bits(i32, i32)");
+        self.b.emit_line("declare i32 @kp_ffloor_f32_bits(i32)");
+        self.b.emit_line("declare i32 @kp_fceil_f32_bits(i32)");
+        self.b.emit_line("declare i32 @kp_fx_sqrt_i32(i32)");
+        self.b.emit_line("declare i32 @kp_fx_sin_deg_i32(i32)");
+        self.b.emit_line("declare i32 @kp_fx_cos_deg_i32(i32)");
+        self.b.emit_line("declare i32 @kp_fx_tan_deg_i32(i32)");
+        self.b.emit_line("declare i32 @kp_fx_asin_fixed_i32(i32)");
+        self.b.emit_line("declare i32 @kp_fx_acos_fixed_i32(i32)");
+        self.b.emit_line("declare i32 @kp_fx_atan_fixed_i32(i32)");
+        self.b.emit_line("declare i32 @kp_fx_ln_i32(i32)");
+        self.b.emit_line("declare i32 @kp_fx_log_i32(i32)");
         self.b.emit_line("");
     }
 
     fn emit_main_wrapper(&mut self, entry: &str) {
+        let entry = llvm_word_sym(entry);
         // A tiny C-like main in LLVM, allocating stack+sp on entry.
         // You can also do this in C instead; this is just convenience.
         self.b.emit_line("define i32 @main() {");
@@ -241,14 +390,20 @@ impl<'a> Codegen<'a> {
         self.b.emit_line("  %stack = alloca [1024 x i32], align 16");
         self.b.emit_line("  %sp = alloca i32, align 4");
         self.b.emit_line("  store i32 0, i32* %sp, align 4");
-        self.b.emit_line("  %base = getelementptr inbounds [1024 x i32], [1024 x i32]* %stack, i32 0, i32 0");
-        self.b.emit_line(&format!("  call void @{}(i32* %base, i32* %sp)", entry));
+        self.b.emit_line(
+            "  %base = getelementptr inbounds [1024 x i32], [1024 x i32]* %stack, i32 0, i32 0",
+        );
+        self.b
+            .emit_line(&format!("  call void @rt_heap_reset(i32 {})", self.here));
+        self.b
+            .emit_line(&format!("  call void @{}(i32* %base, i32* %sp)", entry));
         self.b.emit_line("  ret i32 0");
         self.b.emit_line("}");
         self.b.emit_line("");
     }
 
     fn begin_func(&mut self, name: &str) {
+        let name = llvm_word_sym(name);
         self.b.emit_line(&format!(
             "define void @{}(i32* %stack_base, i32* %sp_ptr) {{",
             name
@@ -256,10 +411,8 @@ impl<'a> Codegen<'a> {
         self.b.emit_line("entry:");
         self.b
             .emit_line("  %rstack = alloca [1024 x i32], align 16");
-        self.b
-            .emit_line("  %rsp_ptr = alloca i32, align 4");
-        self.b
-            .emit_line("  store i32 0, i32* %rsp_ptr, align 4");
+        self.b.emit_line("  %rsp_ptr = alloca i32, align 4");
+        self.b.emit_line("  store i32 0, i32* %rsp_ptr, align 4");
         self.b.emit_line(
             "  %rstack_base = getelementptr inbounds [1024 x i32], [1024 x i32]* %rstack, i32 0, i32 0",
         );
@@ -274,13 +427,17 @@ impl<'a> Codegen<'a> {
     // stack ops: push/pop using memory stack + sp_ptr
     fn load_sp(&mut self) -> String {
         let t = self.b.fresh_tmp();
-        self.b
-            .emit_line(&format!("  {} = load i32, i32* {}, align 4", t, self.sp_ptr));
+        self.b.emit_line(&format!(
+            "  {} = load i32, i32* {}, align 4",
+            t, self.sp_ptr
+        ));
         t
     }
     fn store_sp(&mut self, sp: &str) {
-        self.b
-            .emit_line(&format!("  store i32 {}, i32* {}, align 4", sp, self.sp_ptr));
+        self.b.emit_line(&format!(
+            "  store i32 {}, i32* {}, align 4",
+            sp, self.sp_ptr
+        ));
     }
 
     fn push_i32(&mut self, v: &str) {
@@ -290,7 +447,8 @@ impl<'a> Codegen<'a> {
             "  {} = getelementptr inbounds i32, i32* {}, i32 {}",
             ptr, self.stack_base, sp
         ));
-        self.b.emit_line(&format!("  store i32 {}, i32* {}, align 4", v, ptr));
+        self.b
+            .emit_line(&format!("  store i32 {}, i32* {}, align 4", v, ptr));
         let sp2 = self.b.fresh_tmp();
         self.b.emit_line(&format!("  {} = add i32 {}, 1", sp2, sp)); // wrap
         self.store_sp(&sp2);
@@ -307,20 +465,25 @@ impl<'a> Codegen<'a> {
             ptr, self.stack_base, sp2
         ));
         let v = self.b.fresh_tmp();
-        self.b.emit_line(&format!("  {} = load i32, i32* {}, align 4", v, ptr));
+        self.b
+            .emit_line(&format!("  {} = load i32, i32* {}, align 4", v, ptr));
         v
     }
 
     fn load_rsp(&mut self) -> String {
         let t = self.b.fresh_tmp();
-        self.b
-            .emit_line(&format!("  {} = load i32, i32* {}, align 4", t, self.rsp_ptr));
+        self.b.emit_line(&format!(
+            "  {} = load i32, i32* {}, align 4",
+            t, self.rsp_ptr
+        ));
         t
     }
 
     fn store_rsp(&mut self, rsp: &str) {
-        self.b
-            .emit_line(&format!("  store i32 {}, i32* {}, align 4", rsp, self.rsp_ptr));
+        self.b.emit_line(&format!(
+            "  store i32 {}, i32* {}, align 4",
+            rsp, self.rsp_ptr
+        ));
     }
 
     fn rpush_i32(&mut self, v: &str) {
@@ -330,16 +493,19 @@ impl<'a> Codegen<'a> {
             "  {} = getelementptr inbounds i32, i32* {}, i32 {}",
             ptr, self.rstack_base, rsp
         ));
-        self.b.emit_line(&format!("  store i32 {}, i32* {}, align 4", v, ptr));
+        self.b
+            .emit_line(&format!("  store i32 {}, i32* {}, align 4", v, ptr));
         let rsp2 = self.b.fresh_tmp();
-        self.b.emit_line(&format!("  {} = add i32 {}, 1", rsp2, rsp));
+        self.b
+            .emit_line(&format!("  {} = add i32 {}, 1", rsp2, rsp));
         self.store_rsp(&rsp2);
     }
 
     fn rpop_i32(&mut self) -> String {
         let rsp = self.load_rsp();
         let rsp2 = self.b.fresh_tmp();
-        self.b.emit_line(&format!("  {} = sub i32 {}, 1", rsp2, rsp));
+        self.b
+            .emit_line(&format!("  {} = sub i32 {}, 1", rsp2, rsp));
         self.store_rsp(&rsp2);
         let ptr = self.b.fresh_tmp();
         self.b.emit_line(&format!(
@@ -347,21 +513,24 @@ impl<'a> Codegen<'a> {
             ptr, self.rstack_base, rsp2
         ));
         let v = self.b.fresh_tmp();
-        self.b.emit_line(&format!("  {} = load i32, i32* {}, align 4", v, ptr));
+        self.b
+            .emit_line(&format!("  {} = load i32, i32* {}, align 4", v, ptr));
         v
     }
 
     fn rpeek_i32(&mut self) -> String {
         let rsp = self.load_rsp();
         let rsp2 = self.b.fresh_tmp();
-        self.b.emit_line(&format!("  {} = sub i32 {}, 1", rsp2, rsp));
+        self.b
+            .emit_line(&format!("  {} = sub i32 {}, 1", rsp2, rsp));
         let ptr = self.b.fresh_tmp();
         self.b.emit_line(&format!(
             "  {} = getelementptr inbounds i32, i32* {}, i32 {}",
             ptr, self.rstack_base, rsp2
         ));
         let v = self.b.fresh_tmp();
-        self.b.emit_line(&format!("  {} = load i32, i32* {}, align 4", v, ptr));
+        self.b
+            .emit_line(&format!("  {} = load i32, i32* {}, align 4", v, ptr));
         v
     }
 
@@ -378,7 +547,8 @@ impl<'a> Codegen<'a> {
         let b = self.pop_i32();
         let a = self.pop_i32();
         let r = self.b.fresh_tmp();
-        self.b.emit_line(&format!("  {} = {} i32 {}, {}", r, op, a, b));
+        self.b
+            .emit_line(&format!("  {} = {} i32 {}, {}", r, op, a, b));
         self.push_i32(&r);
     }
 
@@ -412,9 +582,11 @@ impl<'a> Codegen<'a> {
         let a = self.pop_i32();
         let r = self.b.fresh_tmp();
         if is_mod {
-            self.b.emit_line(&format!("  {} = srem i32 {}, {}", r, a, b)); // 0方向
+            self.b
+                .emit_line(&format!("  {} = srem i32 {}, {}", r, a, b)); // 0方向
         } else {
-            self.b.emit_line(&format!("  {} = sdiv i32 {}, {}", r, a, b)); // 0方向
+            self.b
+                .emit_line(&format!("  {} = sdiv i32 {}, {}", r, a, b)); // 0方向
         }
         self.push_i32(&r);
     }
@@ -433,7 +605,8 @@ impl<'a> Codegen<'a> {
     fn zero_lt(&mut self) {
         let a = self.pop_i32();
         let c = self.b.fresh_tmp();
-        self.b.emit_line(&format!("  {} = icmp slt i32 {}, 0", c, a));
+        self.b
+            .emit_line(&format!("  {} = icmp slt i32 {}, 0", c, a));
         let z = self.b.fresh_tmp();
         self.b.emit_line(&format!("  {} = zext i1 {} to i32", z, c));
         let neg = self.b.fresh_tmp();
@@ -444,10 +617,8 @@ impl<'a> Codegen<'a> {
     // Control flow sugar (IF/ELSE/THEN, BEGIN/UNTIL, BEGIN/WHILE/REPEAT)
     fn emit_br_cond_zero_to(&mut self, cond_i32: &str, if_zero_lbl: &str, if_nz_lbl: &str) {
         let c = self.b.fresh_tmp();
-        self.b.emit_line(&format!(
-            "  {} = icmp eq i32 {}, 0",
-            c, cond_i32
-        ));
+        self.b
+            .emit_line(&format!("  {} = icmp eq i32 {}, 0", c, cond_i32));
         self.b.emit_line(&format!(
             "  br i1 {}, label %{}, label %{}",
             c, if_zero_lbl, if_nz_lbl
@@ -603,10 +774,7 @@ impl<'a> Codegen<'a> {
 
         let name = self.b.fresh_lbl("str");
         let n = bytes.len();
-        let body: String = bytes
-            .into_iter()
-            .map(|b| format!("\\{:02X}", b))
-            .collect();
+        let body: String = bytes.into_iter().map(|b| format!("\\{:02X}", b)).collect();
 
         self.b.emit_global_line(&format!(
             "@{} = private constant [{} x i8] c\"{}\"",
@@ -622,7 +790,12 @@ impl<'a> Codegen<'a> {
         ptr
     }
 
-    fn call_extern(&mut self, word: &str, arg_mode: ExternArgMode, str_arg: Option<String>) -> Result<(), String> {
+    fn call_extern(
+        &mut self,
+        word: &str,
+        arg_mode: ExternArgMode,
+        str_arg: Option<String>,
+    ) -> Result<(), String> {
         let callee = self
             .externs
             .get(word)
@@ -632,26 +805,30 @@ impl<'a> Codegen<'a> {
         match arg_mode {
             ExternArgMode::PopI32Void => {
                 let v = self.pop_i32();
-                self.b.emit_line(&format!("  call void @{}(i32 {})", callee, v));
+                self.b
+                    .emit_line(&format!("  call void @{}(i32 {})", callee, v));
             }
             ExternArgMode::Void => {
                 self.b.emit_line(&format!("  call void @{}()", callee));
             }
             ExternArgMode::RetI32Push => {
                 let r = self.b.fresh_tmp();
-                self.b.emit_line(&format!("  {} = call i32 @{}()", r, callee));
+                self.b
+                    .emit_line(&format!("  {} = call i32 @{}()", r, callee));
                 self.push_i32(&r);
             }
             ExternArgMode::PopI32RetI32Push => {
                 let v = self.pop_i32();
                 let r = self.b.fresh_tmp();
-                self.b.emit_line(&format!("  {} = call i32 @{}(i32 {})", r, callee, v));
+                self.b
+                    .emit_line(&format!("  {} = call i32 @{}(i32 {})", r, callee, v));
                 self.push_i32(&r);
             }
             ExternArgMode::StrVoid => {
                 let s = str_arg.ok_or("Missing string argument for PWRITE-STR")?;
                 let p = self.emit_string_global(&s);
-                self.b.emit_line(&format!("  call void @{}(i8* {})", callee, p));
+                self.b
+                    .emit_line(&format!("  call void @{}(i8* {})", callee, p));
             }
             ExternArgMode::Pop2I32Void => {
                 let b = self.pop_i32();
@@ -683,10 +860,42 @@ impl<'a> Codegen<'a> {
     }
 
     fn call_word(&mut self, word: &str) {
+        let word = llvm_word_sym(word);
         self.b.emit_line(&format!(
             "  call void @{}(i32* {}, i32* {})",
             word, self.stack_base, self.sp_ptr
         ));
+    }
+
+    fn try_emit_native_pascal_routine(&mut self, alias: Option<&str>) -> Result<bool, String> {
+        let Some(alias) = alias else {
+            return Ok(false);
+        };
+        let key = match alias {
+            "program::abs" => Some(("__KP_FABS_F32", ExternArgMode::PopI32RetI32Push)),
+            "program::sqrt" => Some(("__KP_FSQRT_F32", ExternArgMode::PopI32RetI32Push)),
+            "program::sin" => Some(("__KP_FSIN_F32", ExternArgMode::PopI32RetI32Push)),
+            "program::cos" => Some(("__KP_FCOS_F32", ExternArgMode::PopI32RetI32Push)),
+            "program::pow" => Some(("__KP_FPOW_F32_I32", ExternArgMode::Pop2I32RetI32Push)),
+            "program::floor" => Some(("__KP_FFLOOR_F32", ExternArgMode::PopI32RetI32Push)),
+            "program::ceil" => Some(("__KP_FCEIL_F32", ExternArgMode::PopI32RetI32Push)),
+
+            "program::fx_sqrt" => Some(("__KP_FX_SQRT", ExternArgMode::PopI32RetI32Push)),
+            "program::fx_sin" => Some(("__KP_FX_SIN", ExternArgMode::PopI32RetI32Push)),
+            "program::fx_cos" => Some(("__KP_FX_COS", ExternArgMode::PopI32RetI32Push)),
+            "program::fx_tan" => Some(("__KP_FX_TAN", ExternArgMode::PopI32RetI32Push)),
+            "program::fx_asin" => Some(("__KP_FX_ASIN", ExternArgMode::PopI32RetI32Push)),
+            "program::fx_acos" => Some(("__KP_FX_ACOS", ExternArgMode::PopI32RetI32Push)),
+            "program::fx_atan" => Some(("__KP_FX_ATAN", ExternArgMode::PopI32RetI32Push)),
+            "program::fx_ln" => Some(("__KP_FX_LN", ExternArgMode::PopI32RetI32Push)),
+            "program::fx_log" => Some(("__KP_FX_LOG", ExternArgMode::PopI32RetI32Push)),
+            _ => None,
+        };
+        if let Some((word, mode)) = key {
+            self.call_extern(word, mode, None)?;
+            return Ok(true);
+        }
+        Ok(false)
     }
 
     fn compile_body(&mut self, toks: &[Tok]) -> Result<(), String> {
@@ -695,10 +904,7 @@ impl<'a> Codegen<'a> {
             match &toks[i] {
                 Tok::Num(v) => self.push_i32(&format!("{}", v)),
                 Tok::Str(s) => {
-                    // For now, require next token to be PWRITE-STR or you can define semantics later.
-                    // We'll push nothing; we keep it as immediate string for service call.
-                    // A more FORTH-like approach: push address. But we keep it simple here.
-                    // Store in a side channel: next token must be Word("PWRITE-STR")
+                    // Compile-time handling for a few bootstrap-style immediate string consumers.
                     if i + 1 >= toks.len() {
                         return Err("S\" must be followed by a word (e.g., PWRITE-STR)".into());
                     }
@@ -707,7 +913,21 @@ impl<'a> Codegen<'a> {
                             self.call_extern("PWRITE-STR", ExternArgMode::StrVoid, Some(s.clone()))?;
                             i += 1; // consume following word
                         }
-                        _ => return Err("S\" currently only supported as: S\" ...\" PWRITE-STR".into()),
+                        Tok::Word(w) if w == "READ-F32" || w == "FNUMBER?" => {
+                            if let Some(bits) = parse_f32_token_bits(s) {
+                                self.push_i32(&bits.to_string());
+                                self.push_i32("-1");
+                            } else {
+                                self.push_i32("0");
+                            }
+                            i += 1; // consume following word
+                        }
+                        _ => {
+                            return Err(
+                                "S\" currently only supported as: S\" ...\" PWRITE-STR / READ-F32 / FNUMBER?"
+                                    .into(),
+                            )
+                        }
                     }
                 }
                 Tok::Word(w) => {
@@ -725,6 +945,19 @@ impl<'a> Codegen<'a> {
                         // stack ops
                         "DUP" => self.dup(),
                         "DROP" => self.drop(),
+                        "SWAP" => {
+                            let b = self.pop_i32();
+                            let a = self.pop_i32();
+                            self.push_i32(&b);
+                            self.push_i32(&a);
+                        }
+                        "OVER" => {
+                            let b = self.pop_i32();
+                            let a = self.pop_i32();
+                            self.push_i32(&a);
+                            self.push_i32(&b);
+                            self.push_i32(&a);
+                        }
                         ">R" => {
                             let v = self.pop_i32();
                             self.rpush_i32(&v);
@@ -747,6 +980,41 @@ impl<'a> Codegen<'a> {
 
                         "NEGATE" => self.unary_negate(),
                         "AND" => self.and(),
+                        "OR" => self.binop("or"),
+                        "XOR" => self.binop("xor"),
+                        "LSHIFT" => {
+                            let b = self.pop_i32();
+                            let a = self.pop_i32();
+                            let sh = self.b.fresh_tmp();
+                            self.b.emit_line(&format!("  {} = and i32 {}, 31", sh, b));
+                            let r = self.b.fresh_tmp();
+                            self.b
+                                .emit_line(&format!("  {} = shl i32 {}, {}", r, a, sh));
+                            self.push_i32(&r);
+                        }
+                        "RSHIFT" => {
+                            let b = self.pop_i32();
+                            let a = self.pop_i32();
+                            let sh = self.b.fresh_tmp();
+                            self.b.emit_line(&format!("  {} = and i32 {}, 31", sh, b));
+                            let r = self.b.fresh_tmp();
+                            self.b
+                                .emit_line(&format!("  {} = lshr i32 {}, {}", r, a, sh));
+                            self.push_i32(&r);
+                        }
+                        "/MOD" => {
+                            let b = self.pop_i32();
+                            let a = self.pop_i32();
+                            let rem = self.b.fresh_tmp();
+                            let quo = self.b.fresh_tmp();
+                            self.b
+                                .emit_line(&format!("  {} = srem i32 {}, {}", rem, a, b));
+                            self.b
+                                .emit_line(&format!("  {} = sdiv i32 {}, {}", quo, a, b));
+                            // Forth: remainder quotient
+                            self.push_i32(&rem);
+                            self.push_i32(&quo);
+                        }
 
                         // comparisons: return -1/0
                         "=" => self.cmp_to_bool_minus1("eq"),
@@ -768,31 +1036,117 @@ impl<'a> Codegen<'a> {
                         "REPEAT" => self.end_repeat()?,
 
                         // service calls (extern)
-                        "PWRITE-I32" => self.call_extern("PWRITE-I32", ExternArgMode::PopI32Void, None)?,
-                        "PWRITE-BOOL" => self.call_extern("PWRITE-BOOL", ExternArgMode::PopI32Void, None)?,
-                        "PWRITE-CHAR" => self.call_extern("PWRITE-CHAR", ExternArgMode::PopI32Void, None)?,
+                        "PWRITE-I32" => {
+                            self.call_extern("PWRITE-I32", ExternArgMode::PopI32Void, None)?
+                        }
+                        "." => self.call_extern("PWRITE-I32", ExternArgMode::PopI32Void, None)?,
+                        "PWRITE-BOOL" => {
+                            self.call_extern("PWRITE-BOOL", ExternArgMode::PopI32Void, None)?
+                        }
+                        "PWRITE-CHAR" => {
+                            self.call_extern("PWRITE-CHAR", ExternArgMode::PopI32Void, None)?
+                        }
+                        "EMIT" => {
+                            self.call_extern("PWRITE-CHAR", ExternArgMode::PopI32Void, None)?
+                        }
                         "PWRITELN" => self.call_extern("PWRITELN", ExternArgMode::Void, None)?,
-                        "PWRITE-HEX" => self.call_extern("PWRITE-HEX", ExternArgMode::PopI32Void, None)?,
+                        "PWRITE-HEX" => {
+                            self.call_extern("PWRITE-HEX", ExternArgMode::PopI32Void, None)?
+                        }
 
-                        "PREAD-I32" => self.call_extern("PREAD-I32", ExternArgMode::RetI32Push, None)?,
-                        "PREAD-BOOL" => self.call_extern("PREAD-BOOL", ExternArgMode::RetI32Push, None)?,
-                        "PREAD-CHAR" => self.call_extern("PREAD-CHAR", ExternArgMode::RetI32Push, None)?,
+                        "PREAD-I32" => {
+                            self.call_extern("PREAD-I32", ExternArgMode::RetI32Push, None)?
+                        }
+                        "PREAD-BOOL" => {
+                            self.call_extern("PREAD-BOOL", ExternArgMode::RetI32Push, None)?
+                        }
+                        "PREAD-CHAR" => {
+                            self.call_extern("PREAD-CHAR", ExternArgMode::RetI32Push, None)?
+                        }
                         "PREADLN" => self.call_extern("PREADLN", ExternArgMode::Void, None)?,
 
-                        "PBOOL" => self.call_extern("PBOOL", ExternArgMode::PopI32RetI32Push, None)?,
+                        "PBOOL" => {
+                            self.call_extern("PBOOL", ExternArgMode::PopI32RetI32Push, None)?
+                        }
                         "PVAR!" => self.call_extern("PVAR!", ExternArgMode::Pop2I32Void, None)?,
-                        "PVAR@" => self.call_extern("PVAR@", ExternArgMode::PopI32RetI32Push, None)?,
-                        "PFIELD!" => self.call_extern("PFIELD!", ExternArgMode::Pop3I32Void, None)?,
+                        "PVAR@" => {
+                            self.call_extern("PVAR@", ExternArgMode::PopI32RetI32Push, None)?
+                        }
+                        "PFIELD!" => {
+                            self.call_extern("PFIELD!", ExternArgMode::Pop3I32Void, None)?
+                        }
                         "PFIELD@" => {
                             self.call_extern("PFIELD@", ExternArgMode::Pop2I32RetI32Push, None)?
                         }
 
+                        // Float32-on-cell words from bootstrap treated as primitives.
+                        "PREAD-F32" => {
+                            self.call_extern("PREAD-F32", ExternArgMode::RetI32Push, None)?
+                        }
+                        "FADD" => {
+                            self.call_extern("FADD", ExternArgMode::Pop2I32RetI32Push, None)?
+                        }
+                        "FSUB" => {
+                            self.call_extern("FSUB", ExternArgMode::Pop2I32RetI32Push, None)?
+                        }
+                        "FMUL" => {
+                            self.call_extern("FMUL", ExternArgMode::Pop2I32RetI32Push, None)?
+                        }
+                        "FDIV" => {
+                            self.call_extern("FDIV", ExternArgMode::Pop2I32RetI32Push, None)?
+                        }
+                        "FNEGATE" => {
+                            self.call_extern("FNEGATE", ExternArgMode::PopI32RetI32Push, None)?
+                        }
+                        "FABS" => {
+                            self.call_extern("FABS", ExternArgMode::PopI32RetI32Push, None)?
+                        }
+                        "F=" => self.call_extern("F=", ExternArgMode::Pop2I32RetI32Push, None)?,
+                        "F<" => self.call_extern("F<", ExternArgMode::Pop2I32RetI32Push, None)?,
+                        "F<=" => self.call_extern("F<=", ExternArgMode::Pop2I32RetI32Push, None)?,
+                        "FZERO?" | "F0=" => {
+                            self.call_extern("FZERO?", ExternArgMode::PopI32RetI32Push, None)?
+                        }
+                        "FINF?" => {
+                            self.call_extern("FINF?", ExternArgMode::PopI32RetI32Push, None)?
+                        }
+                        "FNAN?" => {
+                            self.call_extern("FNAN?", ExternArgMode::PopI32RetI32Push, None)?
+                        }
+                        "FFINITE?" => {
+                            self.call_extern("FFINITE?", ExternArgMode::PopI32RetI32Push, None)?
+                        }
+                        "S>F" => self.call_extern("S>F", ExternArgMode::PopI32RetI32Push, None)?,
+                        "F>S" => self.call_extern("F>S", ExternArgMode::PopI32RetI32Push, None)?,
+                        "Q16.16>F" => {
+                            self.call_extern("Q16.16>F", ExternArgMode::PopI32RetI32Push, None)?
+                        }
+                        "F>Q16.16" => {
+                            self.call_extern("F>Q16.16", ExternArgMode::PopI32RetI32Push, None)?
+                        }
+                        "FROUND-I32" => {
+                            self.call_extern("FROUND-I32", ExternArgMode::PopI32RetI32Push, None)?
+                        }
+                        "F." | "WRITE-F32" | "PWRITE-F32" => {
+                            self.call_extern("PWRITE-F32", ExternArgMode::PopI32Void, None)?
+                        }
+                        "F+INF" => self.push_i32(&(f32::INFINITY.to_bits() as i32).to_string()),
+                        "F-INF" => self.push_i32(&(f32::NEG_INFINITY.to_bits() as i32).to_string()),
+                        "FNAN" => self.push_i32(&(f32::NAN.to_bits() as i32).to_string()),
+
                         // Minimal compile-time dictionary words used by generated IL.
                         "CONSTANT" => {
-                            let val = match toks.get(i.wrapping_sub(1)) {
-                                Some(Tok::Num(v)) => *v,
-                                _ => return Err("CONSTANT currently requires a literal number before it".into()),
-                            };
+                            let val = resolve_prev_compile_time_value(
+                                toks,
+                                i,
+                                self.here,
+                                &self.constant_words,
+                                &self.created_words,
+                            )
+                            .ok_or_else(|| {
+                                "CONSTANT currently requires a compile-time value before it"
+                                    .to_string()
+                            })?;
                             let _ = self.pop_i32();
                             let name = match toks.get(i + 1) {
                                 Some(Tok::Word(name)) => name.clone(),
@@ -809,18 +1163,16 @@ impl<'a> Codegen<'a> {
                             self.created_words.insert(name, self.here);
                             i += 1; // consume name
                         }
+                        "HERE" => {
+                            self.call_extern("HERE", ExternArgMode::RetI32Push, None)?
+                        }
                         "," => {
                             // Forth comma allocates one 32-bit cell (4 bytes).
                             let _ = self.pop_i32();
                             self.here = self.here.wrapping_add(4);
                         }
                         "ALLOT" => {
-                            let _ = self.pop_i32();
-                            if let Some(Tok::Num(lit)) = toks.get(i.wrapping_sub(1)) {
-                                self.here = self.here.wrapping_add(*lit);
-                            } else {
-                                return Err("ALLOT currently requires a literal number before it".into());
-                            }
+                            self.call_extern("ALLOT", ExternArgMode::PopI32Void, None)?
                         }
 
                         _ if self.known_defs.contains(w) => self.call_word(w),
@@ -828,7 +1180,10 @@ impl<'a> Codegen<'a> {
                     }
                 }
                 Tok::Colon | Tok::Semi => {
-                    return Err("Unexpected ':' or ';' inside body (top-level parser should split defs)".into())
+                    return Err(
+                        "Unexpected ':' or ';' inside body (top-level parser should split defs)"
+                            .into(),
+                    )
                 }
             }
             i += 1;
@@ -901,23 +1256,37 @@ fn parse_program(toks: &[Tok]) -> Result<ParsedProgram, String> {
                 created_words.insert(name, here);
                 i += 2;
             }
+            Tok::Word(w) if w == "VARIABLE" => {
+                let name = match toks.get(i + 1) {
+                    Some(Tok::Word(name)) => name.clone(),
+                    _ => return Err("VARIABLE requires a following name at top-level".into()),
+                };
+                created_words.insert(name, here);
+                here = here.wrapping_add(4);
+                i += 2;
+            }
             Tok::Word(w) if w == "," => {
                 here = here.wrapping_add(4);
                 i += 1;
             }
+            Tok::Word(w) if w == "HERE" => {
+                i += 1;
+            }
             Tok::Word(w) if w == "ALLOT" => {
-                let n = match toks.get(i.wrapping_sub(1)) {
-                    Some(Tok::Num(v)) => *v,
-                    _ => return Err("Top-level ALLOT requires a literal number before it".into()),
-                };
+                let n =
+                    resolve_prev_compile_time_value(toks, i, here, &constant_words, &created_words)
+                        .ok_or_else(|| {
+                            "Top-level ALLOT requires a compile-time value before it".to_string()
+                        })?;
                 here = here.wrapping_add(n);
                 i += 1;
             }
             Tok::Word(w) if w == "CONSTANT" => {
-                let val = match toks.get(i.wrapping_sub(1)) {
-                    Some(Tok::Num(v)) => *v,
-                    _ => return Err("Top-level CONSTANT requires a literal number before it".into()),
-                };
+                let val =
+                    resolve_prev_compile_time_value(toks, i, here, &constant_words, &created_words)
+                        .ok_or_else(|| {
+                            "Top-level CONSTANT requires a compile-time value before it".to_string()
+                        })?;
                 let name = match toks.get(i + 1) {
                     Some(Tok::Word(name)) => name.clone(),
                     _ => return Err("CONSTANT requires a following name at top-level".into()),
@@ -951,6 +1320,7 @@ fn main() -> Result<(), String> {
         return Err(format!("Usage: {} <input.fth> <output.ll>", args[0]));
     }
     let input = fs::read_to_string(&args[1]).map_err(|e| format!("Read error: {}", e))?;
+    let routine_aliases = extract_routine_aliases(&input);
     let toks = tokenize(&input)?;
     let parsed = parse_program(&toks)?;
     let defs = parsed.defs;
@@ -971,7 +1341,10 @@ fn main() -> Result<(), String> {
     // Compile all defs
     for (name, body) in &defs {
         cg.begin_func(name);
-        cg.compile_body(body)?;
+        let alias = routine_aliases.get(name).map(|s| s.as_str());
+        if !cg.try_emit_native_pascal_routine(alias)? {
+            cg.compile_body(body)?;
+        }
         cg.end_func();
     }
 
@@ -984,7 +1357,9 @@ fn main() -> Result<(), String> {
     } else if defs.len() == 1 {
         defs[0].0.clone()
     } else {
-        return Err("No entry point. Define : MAIN ... ; or provide exactly one definition.".into());
+        return Err(
+            "No entry point. Define : MAIN ... ; or provide exactly one definition.".into(),
+        );
     };
     cg.emit_main_wrapper(&entry);
 

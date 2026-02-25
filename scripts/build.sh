@@ -18,6 +18,6 @@ fi
 cargo build
 ./target/debug/kforthc "$INPUT" "$IR"
 "$LLC" -filetype=obj "$IR" -o "$OBJ"
-clang -no-pie "$OBJ" runtime/runtime.c -o "$BIN"
+clang -no-pie "$OBJ" runtime/runtime.c -o "$BIN" -lm
 
 "./$BIN"

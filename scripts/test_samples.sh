@@ -41,7 +41,7 @@ run_one() {
   "$KPASCAL_BIN" < "$src" > "$forth"
   ./target/debug/kforthc "$forth" "$ir"
   "$LLC" -filetype=obj "$ir" -o "$obj"
-  clang -no-pie "$obj" runtime/runtime.c -o "$bin"
+  clang -no-pie "$obj" runtime/runtime.c -o "$bin" -lm
 
   if [[ "$name" == "05_io_mix" ]]; then
     printf '42\n1Q\n7 8 9\nHELLO\n' | "$bin" > "$actual"

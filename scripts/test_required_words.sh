@@ -19,7 +19,7 @@ fi
 cargo build
 ./target/debug/kforthc required_words_test.fth "$IR"
 "$LLC" -filetype=obj "$IR" -o "$OBJ"
-clang -no-pie "$OBJ" runtime/runtime.c -o "$BIN"
+clang -no-pie "$OBJ" runtime/runtime.c -o "$BIN" -lm
 printf '42\n1\nK\n' | "./$BIN" > "$ACTUAL"
 
 diff -u "$EXPECTED" "$ACTUAL"

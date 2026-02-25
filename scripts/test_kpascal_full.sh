@@ -34,7 +34,7 @@ cargo build
 "$KPASCAL_BIN" < "$PASCAL_SRC" > "$FORTH_OUT"
 ./target/debug/kforthc "$FORTH_OUT" "$IR_OUT"
 "$LLC" -filetype=obj "$IR_OUT" -o "$OBJ_OUT"
-clang -no-pie "$OBJ_OUT" runtime/runtime.c -o "$BIN_OUT"
+clang -no-pie "$OBJ_OUT" runtime/runtime.c -o "$BIN_OUT" -lm
 printf '255\n1Z\n7 8 9\nHELLO\n' | "./$BIN_OUT" > "$ACTUAL_OUT"
 
 diff -u "$EXPECTED_OUT" "$ACTUAL_OUT"

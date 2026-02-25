@@ -4,7 +4,7 @@
 
 `kforthc` は Rust 製のコンパイラで、**kFORTH プログラム**を **LLVM IR** に変換し、`llc` と `clang` でオブジェクト/実行ファイル化します。
 
-- FORTH 言語拡張は行いません。
+- 主対象は kPascal 生成の kFORTH IL ですが、実用的なサブセットFORTH（現行の float32-on-cell ワード群を含む）もサポートします。
 - **kPascal の中間コード**（kFORTH）向けバックエンドとしても利用できます。
 - 実運用パイプライン: **kPascal -> kFORTH -> LLVM -> オブジェクト/実行ファイル**
 - `:` 定義など高水準ワードを実装しているため、サブセットFORTHコンパイラとしても利用可能です。
@@ -22,6 +22,9 @@ cargo build
 ## 言語仕様
 
 現在合意している挙動（wrap/boolean/char幅/実行時トラップ/未初期化読み出し等）は `SPEC.md` を参照してください。
+保持している制御構造は `IF/ELSE/THEN`、`BEGIN/UNTIL`、`BEGIN/WHILE/REPEAT` です。
+浮動小数点は FPU 前提の実装で、互換対象は主に正常な有限値ケースです（bootstrap の端ケース厳密互換は目的にしません）。
+現行サブセットには `HERE` / `ALLOT` / `CREATE` / `VARIABLE` / `,` / `CONSTANT` などの辞書/データ空間操作も含みます。`HERE/ALLOT` はランタイム管理、トップレベルのレイアウト計算はコンパイル時処理です（厳密な挙動・制約は `SPEC.md` を参照）。
 
 ## 必要環境
 
@@ -36,7 +39,7 @@ cargo build
 cargo build
 ./target/debug/kforthc example.fth out.ll
 llc -filetype=obj out.ll -o out.o   # または llc-14
-clang -no-pie out.o runtime/runtime.c -o a.out
+clang -no-pie out.o runtime/runtime.c -o a.out -lm
 ./a.out
 ```
 

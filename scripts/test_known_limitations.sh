@@ -32,7 +32,7 @@ name="23_recursive_fib_constraint"
 "$KPASCAL_BIN" < "$SAMPLES_DIR/$name.pas" > "$BUILD_DIR/$name.fth"
 ./target/debug/kforthc "$BUILD_DIR/$name.fth" "$BUILD_DIR/$name.ll"
 "$LLC" -filetype=obj "$BUILD_DIR/$name.ll" -o "$BUILD_DIR/$name.o"
-clang -no-pie "$BUILD_DIR/$name.o" runtime/runtime.c -o "$BUILD_DIR/$name.out"
+clang -no-pie "$BUILD_DIR/$name.o" runtime/runtime.c -o "$BUILD_DIR/$name.out" -lm
 "$BUILD_DIR/$name.out" > "$BUILD_DIR/$name.actual"
 
 actual="$(tr -d '\r' < "$BUILD_DIR/$name.actual" | head -n 1 | tr -d '[:space:]')"

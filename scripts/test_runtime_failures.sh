@@ -32,7 +32,7 @@ bin="$BUILD_DIR/$name.out"
 "$KPASCAL_BIN" < "$src" > "$forth"
 ./target/debug/kforthc "$forth" "$ir"
 "$LLC" -filetype=obj "$ir" -o "$obj"
-clang -no-pie "$obj" runtime/runtime.c -o "$bin"
+clang -no-pie "$obj" runtime/runtime.c -o "$bin" -lm
 
 set +e
 "$bin" > "$BUILD_DIR/$name.actual" 2> "$BUILD_DIR/$name.err"
