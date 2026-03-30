@@ -3,6 +3,10 @@ set -euo pipefail
 
 if [[ -n "${KPASCAL_BIN:-}" ]]; then
   :
+elif [[ -x "../kpascal/target/debug/kpascal" ]]; then
+  KPASCAL_BIN="../kpascal/target/debug/kpascal"
+elif [[ -x "../kpascal/target/release/kpascal" ]]; then
+  KPASCAL_BIN="../kpascal/target/release/kpascal"
 elif command -v kpascal >/dev/null 2>&1; then
   KPASCAL_BIN="$(command -v kpascal)"
 else
@@ -35,7 +39,7 @@ cargo build
 ./target/debug/kforthc "$FORTH_OUT" "$IR_OUT"
 "$LLC" -filetype=obj "$IR_OUT" -o "$OBJ_OUT"
 clang -no-pie "$OBJ_OUT" runtime/runtime.c -o "$BIN_OUT" -lm
-printf '255\n1Z\n7 8 9\nHELLO\n' | "./$BIN_OUT" > "$ACTUAL_OUT"
+printf '255\n1 Z\n7 8 9\nHELLO\n' | "./$BIN_OUT" > "$ACTUAL_OUT"
 
 diff -u "$EXPECTED_OUT" "$ACTUAL_OUT"
 echo "kpascal full coverage test: PASS"

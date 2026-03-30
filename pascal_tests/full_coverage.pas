@@ -24,8 +24,9 @@ var
   ga2: iarr;
   gcube: arr3;
   gstr: s8;
+  hex: array[9] of char;
 
-(* $I ../kpascal/math.pas *)
+(* $I ../kpascal/math_fixed.pas *)
 
 procedure IncRef(var x: integer);
 begin
@@ -85,8 +86,7 @@ begin
   WriteLn(High(ga1));
 
   gstr := 'ABC';
-  WriteStr(gstr);
-  WriteLn;
+  WriteLn(gstr);
   WriteLn(gstr[3] = #0);
 
   for gi := 1 to 3 do
@@ -118,23 +118,24 @@ begin
   Outer(gi);
   WriteLn(gi);
 
-  WriteLn(sqrt(81));
-  WriteLn(sin(30));
-  WriteLn(cos(60));
-  WriteLn(tan(45));
+  WriteLn(fx_sqrt(81));
+  WriteLn(fx_sin(30));
+  WriteLn(fx_cos(60));
+  WriteLn(fx_tan(45));
 
   Read(gn);
   ReadLn;
   Read(gb, gch);
-  ReadArr(ga1, 3);
-  ReadStr(gstr, 5);
+  Read(ga1[0], ga1[1], ga1[2]);
+  Read(gstr, 5);
 
-  WriteHex(gn);
-  WriteLn;
+  IntToHex(gn, hex, 8, true);
+  WriteLn(hex);
   WriteLn(gb);
   WriteLn(gch);
-  WriteArr(ga1, 3);
-  WriteStr(gstr);
-  WriteLn;
+  WriteLn(ga1[0]);
+  WriteLn(ga1[1]);
+  WriteLn(ga1[2]);
+  WriteLn(gstr);
   WriteLn('END')
 end.

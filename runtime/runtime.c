@@ -8,7 +8,7 @@
 // kforth compatibility: any non-zero is true for display/branching helper words.
 static const char* bool_str(int32_t x) { return x ? "TRUE" : "FALSE"; }
 
-#define MEM_CELLS 65536
+#define MEM_CELLS 524288
 static int32_t mem_cells[MEM_CELLS];
 static int32_t g_here_bytes = 0;
 
