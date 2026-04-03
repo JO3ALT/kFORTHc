@@ -3,6 +3,8 @@ set -euo pipefail
 
 if [[ -n "${KPASCAL_BIN:-}" ]]; then
   :
+elif [[ -x "../kpascal/target/release/kpascal" ]]; then
+  KPASCAL_BIN="../kpascal/target/release/kpascal"
 elif command -v kpascal >/dev/null 2>&1; then
   KPASCAL_BIN="$(command -v kpascal)"
 else

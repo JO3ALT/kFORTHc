@@ -1,12 +1,12 @@
 : MAIN
-  S" sum: " PWRITE-STR
+  S" sum: " TYPE
   3 4 + DUP PWRITE-I32 PWRITELN
 
-  S" if: " PWRITE-STR
+  S" if: " TYPE
   1 IF
-    S" true" PWRITE-STR
+    S" true" TYPE
   ELSE
-    S" false" PWRITE-STR
+    S" false" TYPE
   THEN
   PWRITELN
 ;

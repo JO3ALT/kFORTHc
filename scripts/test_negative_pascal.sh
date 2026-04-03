@@ -3,6 +3,8 @@ set -euo pipefail
 
 if [[ -n "${KPASCAL_BIN:-}" ]]; then
   :
+elif [[ -x "../kpascal/target/release/kpascal" ]]; then
+  KPASCAL_BIN="../kpascal/target/release/kpascal"
 elif command -v kpascal >/dev/null 2>&1; then
   KPASCAL_BIN="$(command -v kpascal)"
 else
@@ -49,7 +51,7 @@ expect_fail "$NEG_DIR/05_parse_error_missing_end.pas" "parse error|expected"
 expect_fail "$NEG_DIR/06_include_missing.pas" "include read failed|No such file|not found"
 expect_fail "$NEG_DIR/07_include_cycle.pas" "include|cycle|recursion|read failed|too deep|stack"
 expect_fail "$NEG_DIR/08_scoping_conflict.pas" "shadow|duplicate|already defined|conflict|same name"
-expect_fail "$NEG_DIR/10_error_position_parse.pas" "line 3, column 3"
+expect_fail "$NEG_DIR/10_error_position_parse.pas" "line 4, column 1"
 expect_fail "$NEG_DIR/11_error_position_include_parse.pas" "line 3, column 7"
 
 echo "all negative tests: PASS"

@@ -230,7 +230,7 @@ impl<'a> Codegen<'a> {
         externs.insert("PWRITE-I32".into(), "pwrite_i32".into());
         externs.insert("PWRITE-BOOL".into(), "pwrite_bool".into());
         externs.insert("PWRITE-CHAR".into(), "pwrite_char".into());
-        externs.insert("PWRITE-STR".into(), "pwrite_str".into());
+        externs.insert("TYPE".into(), "pwrite_str".into());
         externs.insert("PWRITELN".into(), "pwriteln".into());
         externs.insert("PWRITE-HEX".into(), "pwrite_hex".into());
 
@@ -825,7 +825,7 @@ impl<'a> Codegen<'a> {
                 self.push_i32(&r);
             }
             ExternArgMode::StrVoid => {
-                let s = str_arg.ok_or("Missing string argument for PWRITE-STR")?;
+                let s = str_arg.ok_or("Missing string argument for TYPE")?;
                 let p = self.emit_string_global(&s);
                 self.b
                     .emit_line(&format!("  call void @{}(i8* {})", callee, p));
@@ -906,11 +906,11 @@ impl<'a> Codegen<'a> {
                 Tok::Str(s) => {
                     // Compile-time handling for a few bootstrap-style immediate string consumers.
                     if i + 1 >= toks.len() {
-                        return Err("S\" must be followed by a word (e.g., PWRITE-STR)".into());
+                        return Err("S\" must be followed by a word (e.g., TYPE)".into());
                     }
                     match &toks[i + 1] {
-                        Tok::Word(w) if w == "PWRITE-STR" => {
-                            self.call_extern("PWRITE-STR", ExternArgMode::StrVoid, Some(s.clone()))?;
+                        Tok::Word(w) if w == "TYPE" => {
+                            self.call_extern("TYPE", ExternArgMode::StrVoid, Some(s.clone()))?;
                             i += 1; // consume following word
                         }
                         Tok::Word(w) if w == "READ-F32" || w == "FNUMBER?" => {
@@ -922,12 +922,10 @@ impl<'a> Codegen<'a> {
                             }
                             i += 1; // consume following word
                         }
-                        _ => {
-                            return Err(
-                                "S\" currently only supported as: S\" ...\" PWRITE-STR / READ-F32 / FNUMBER?"
-                                    .into(),
-                            )
-                        }
+                        _ => return Err(
+                            "S\" currently only supported as: S\" ...\" TYPE / READ-F32 / FNUMBER?"
+                                .into(),
+                        ),
                     }
                 }
                 Tok::Word(w) => {
@@ -1163,17 +1161,13 @@ impl<'a> Codegen<'a> {
                             self.created_words.insert(name, self.here);
                             i += 1; // consume name
                         }
-                        "HERE" => {
-                            self.call_extern("HERE", ExternArgMode::RetI32Push, None)?
-                        }
+                        "HERE" => self.call_extern("HERE", ExternArgMode::RetI32Push, None)?,
                         "," => {
                             // Forth comma allocates one 32-bit cell (4 bytes).
                             let _ = self.pop_i32();
                             self.here = self.here.wrapping_add(4);
                         }
-                        "ALLOT" => {
-                            self.call_extern("ALLOT", ExternArgMode::PopI32Void, None)?
-                        }
+                        "ALLOT" => self.call_extern("ALLOT", ExternArgMode::PopI32Void, None)?,
 
                         _ if self.known_defs.contains(w) => self.call_word(w),
                         _ => return Err(format!("Unknown word: {}", w)),

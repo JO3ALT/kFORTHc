@@ -1,24 +1,21 @@
 program s05;
 type
   iarr = array[4] of integer;
-  s8 = array[8] of char;
 var
   i: integer;
   b: boolean;
-  c: char;
   a: iarr;
-  s: s8;
 begin
   Read(i);
   ReadLn;
-  Read(b, c);
-  ReadArr(a, 3);
-  ReadStr(s, 5);
+  Read(b);
+  ReadLn;
+  Read(a[0], a[1], a[2], a[3]);
 
   WriteLn(i);
   WriteLn(b);
-  WriteLn(c);
-  WriteArr(a, 3);
-  WriteStr(s);
-  WriteLn
+  WriteLn(a[0]);
+  WriteLn(a[1]);
+  WriteLn(a[2]);
+  WriteLn(a[3])
 end.

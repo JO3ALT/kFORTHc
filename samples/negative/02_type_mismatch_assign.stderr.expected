@@ -1,1 +1,1 @@
-error: type mismatch in assignment
+error: type mismatch in assignment: type mismatch: expected boolean, got integer

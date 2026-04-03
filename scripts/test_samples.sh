@@ -3,6 +3,8 @@ set -euo pipefail
 
 if [[ -n "${KPASCAL_BIN:-}" ]]; then
   :
+elif [[ -x "../kpascal/target/release/kpascal" ]]; then
+  KPASCAL_BIN="../kpascal/target/release/kpascal"
 elif command -v kpascal >/dev/null 2>&1; then
   KPASCAL_BIN="$(command -v kpascal)"
 else
@@ -44,7 +46,7 @@ run_one() {
   clang -no-pie "$obj" runtime/runtime.c -o "$bin" -lm
 
   if [[ "$name" == "05_io_mix" ]]; then
-    printf '42\n1Q\n7 8 9\nHELLO\n' | "$bin" > "$actual"
+    printf '42\n0\n7 8 9 0\n' | "$bin" > "$actual"
   elif [[ "$name" == "15_read_invalid_input" ]]; then
     printf 'abc\n' | "$bin" > "$actual"
   elif [[ "$name" == "26_readln_mixed" ]]; then

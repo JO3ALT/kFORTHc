@@ -31,7 +31,7 @@ This document defines the current behavior expected by tests and runtime.
 
 - Variables/fields are accessed through runtime services (`PVAR@/PVAR!`, `PFIELD@/PFIELD!`).
 - Addressing is byte-based at IL level; runtime resolves to 32-bit cells.
-- Runtime memory is backed by a fixed global cell array (`MEM_CELLS`, currently 65536 cells).
+- Runtime memory is backed by a fixed global cell array (`MEM_CELLS`, currently 134217728 cells).
 - Runtime `HERE`/`ALLOT` operate on a byte-based runtime heap pointer.
 - `HERE` returns the current runtime heap pointer (bytes).
 - `ALLOT` advances the runtime heap pointer by the supplied byte count and clamps to the runtime memory range (`0 .. MEM_CELLS*4`).
@@ -53,12 +53,14 @@ This document defines the current behavior expected by tests and runtime.
 
 ## Strings and I/O
 
-- `S" ..." PWRITE-STR` outputs string literals as generated.
+- `S" ..." TYPE` outputs string literals as generated.
+- `TYPE` is the primary string-output contract surface; legacy `PWRITE-STR` naming is not part of the current contract.
 - `S" ..."` also supports compile-time float parsing forms used by the current subset: `S" ..." READ-F32` and `S" ..." FNUMBER?`.
 - Runtime I/O services include integer/boolean/char read/write plus line helpers.
 - `PREAD-I32` / `PREAD-BOOL` / `PREAD-CHAR` / `PREAD-F32` are token-oriented (whitespace-delimited).
 - `PREAD-CHAR` accepts either a single-character token or a numeric token; invalid input falls back to `0`.
 - Invalid numeric input in `Read` follows current runtime fallback behavior (e.g., `0`).
+- `PWRITE-HEX` emits uppercase 8-digit hexadecimal text.
 
 ## Supported Core Words (Standalone Subset)
 
@@ -67,7 +69,7 @@ This document defines the current behavior expected by tests and runtime.
 - Comparison: `=`, `<>`, `<`, `<=`, `>`, `>=`, `0=`, `0<`
 - Control: `IF`, `ELSE`, `THEN`, `BEGIN`, `UNTIL`, `WHILE`, `REPEAT`
 - Dictionary/data helpers used by generated IL: `HERE`, `CONSTANT`, `CREATE`, `VARIABLE`, `,`, `ALLOT`
-- Runtime services: `PWRITE-*`, `PREAD-*`, `PVAR@/PVAR!`, `PFIELD@/PFIELD!`, `PBOOL`
+- Runtime services: `TYPE`, `PWRITE-*`, `PREAD-*`, `PVAR@/PVAR!`, `PFIELD@/PFIELD!`, `PBOOL`
 - Common output aliases also supported: `.` (integer output), `EMIT` (char output)
 
 ## Float32-on-Cell Extension (Current)

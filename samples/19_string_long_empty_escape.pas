@@ -10,7 +10,7 @@ begin
   WriteLn('A''B');
 
   a := 'ABCDEZ';
-  WriteStr(a);
+  Write(a);
   WriteLn;
   WriteLn(a[4] = #0);
 
@@ -18,7 +18,7 @@ begin
   WriteLn(a[0] = #0);
 
   b := 'HELLO';
-  WriteStr(b);
+  Write(b);
   WriteLn;
   WriteLn(b[5] = #0)
 end.

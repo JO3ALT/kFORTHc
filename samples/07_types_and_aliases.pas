@@ -26,7 +26,7 @@ begin
   WriteLn(Length(a));
   WriteLn(Low(a));
   WriteLn(High(a));
-  WriteStr(s);
+  Write(s);
   WriteLn;
   WriteLn(s[4] = #0)
 end.
